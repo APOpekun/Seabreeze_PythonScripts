@@ -8,29 +8,10 @@ import time
 import csv
 import tkinter as tk
 from tkinter import ttk
-
+from tkinter import messagebox
 		
 
-def Plotter(wavelengths,signal,xlim=[343,1043]):
-	plt.figure(figsize=(10,6))
-	plt.plot(wavelengths,signal,linewidth=1.2)
-	plt.xlabel("Wavelength (nm)")
-	plt.ylabel("Intensity (counts)")
-	plt.title("Spectrum")
-	plt.grid(True,alpha=0.3)
-	plt.xlim(xlim)
-	plt.show()
-def PlotterDual(wavelengths,I0,I,xlim=[343,1043]):
-	plt.figure(figsize=(10,6))
-	plt.semilogy(wavelengths,I0,linewidth=1.2,label="I0 (source)")
-	plt.semilogy(wavelengths,I ,linewidth=1.2,label="I (sample)")
-	plt.xlabel("Wavelength (nm)")
-	plt.ylabel("Intensity (counts)")
-	plt.title("Spectrum")
-	plt.legend()
-	plt.grid(True,alpha=0.3)
-	plt.xlim(xlim)
-	plt.show()
+
 def PlotIntensityStopsSteps(index_history,intensity_history,stop_history):
 	plt.figure(figsize=(10,6))
 	plt.semilogy(index_history,intensity_history,linewidth=1.2)
@@ -103,25 +84,26 @@ class DataManager:
 		self.sample = None
 		#metadata
 		self.spec= None
-		self.wavelength = None
+		self.wavelengths = None
 		self.integration_time_us = None
 		self.stops = None
-	def set(self, name, arr):
-		if hasattr(self,name):
-			setattr(self,name,arr)
-		else:
-			raise AttributeError(f"Unknown field: {name}")
-	def get(self,name):
-		return getattr(self,name,None)
-		
-	def have(self,*names):
-		return all(getattr(self,n)is not None for n  in names)
-	def clear(self,*names):
-		for n in names:
-			setattr(self, n, None)
-	def clear_all(self):
-		for name in self.__dict__.keys():
-			setattr(self,name,None)
+		self.lamp_state = None
+	#def set(self, name, arr):
+	#	if hasattr(self,name):
+	#		setattr(self,name,arr)
+	#	else:
+	#		raise AttributeError(f"Unknown field: {name}")
+	#def get(self,name):
+	#	return getattr(self,name,None)
+	#	
+	#def have(self,*names):
+	#	return all(getattr(self,n)is not None for n  in names)
+	#def clear(self,*names):
+	#	for n in names:
+	#		setattr(self, n, None)
+	#def clear_all(self):
+	#	for name in self.__dict__.keys():
+	#		setattr(self,name,None)
 			
 class Timer:
 	def tic():
@@ -137,26 +119,46 @@ def GetSpec():
 	print("Devices:", devices,flush=True)
 	# Open first device
 	spec = Spectrometer(devices[0])
-	
 	wavelengths = np.array(spec.wavelengths())
 	return spec,wavelengths
+	
+def connectSpec():
+	DataManager.spec,DataManager.wavelengths = GetSpec()
+	
 def LampControl(spec,state,warmup):
 	if state==True:
 		print(f"Lamp ON,warm up for {warmup}",flush=True)
+		spec.features["continuous_strobe"][0].set_enable(state)
+		btn_lamp_state.text="LAMP ON"
+		#btn_lamp_state.bg="green"
+		DataManager.lamp_state=True
 	else:
 		print(f"Lamp OFF,warm up for {warmup}",flush=True)
-	spec.features["continuous_strobe"][0].set_enable(state)
+		spec.features["continuous_strobe"][0].set_enable(state)
+		btn_lamp_state.text="LAMP OFF"
+		#btn_lamp_state.bg="red"
+		DataManager.lamp_state=False
+
 	time.sleep(warmup)
+	
+def Lamp_Toggle():
+	try:
+		if DataManager.lamp_state==True:
+			LampControl(spec=DataManager.spec,state=False,warmup=0)#LightOFF
+		else:
+			LampControl(spec=DataManager.spec,state=True,warmup=0)#Light ON
+	except:
+		LampControl(spec=DataManager.spec,state=False,warmup=0)#LightOFF
 
 def shutterspeedStops(stops,ref=250):
 	#negative means a faster shutter (stop down) Whole stops
 	#positice means a slower shutter (stop open) Whole stops 
 	frac = ref/(2**stops)
 	return 1000000//frac
+	
 def Capture(spec,NumItterations):
 	accumulator = np.zeros(spec.pixels)
-	# Read wavelengths and intensities
-	wavelengths = np.array(spec.wavelengths())
+	# Read intensities
 	Start = Timer.tic()
 	for n in range(NumItterations):
 		accumulator += spec.intensities()
@@ -164,7 +166,7 @@ def Capture(spec,NumItterations):
 	print(f"spectrum captured",flush=True)
 	signal= np.array(accumulator / NumItterations)
 	capturetime = Timer.tok(Start)
-	return [wavelengths,signal,capturetime]
+	return [signal,capturetime]
 
 def gausian_roi_metric(wavelengths,signal,target,sigma=1):
 	w = np.exp(-0.5 * ((wavelengths - target) / sigma)**2)
@@ -196,9 +198,9 @@ def autogain_loop(spec,wavelengths,gain_mode,threshold,target):
 	print(f"{Stops}stops = {us}us",flush=True)
 	LampControl(spec=spec,state=False,warmup=3)		#Light OFF
 	print("Trash 5 itter:", end=" ",flush=True)
-	_,trash,_ = Capture(spec=spec,NumItterations=5) 	#Capture throwaway
+	trash,_ = Capture(spec=spec,NumItterations=5) 	#Capture throwaway
 	print("Dark 100 itter:", end=" ",flush=True)
-	_,Dark,_ = Capture(spec=spec,NumItterations=100) 	#Capture Darks 
+	Dark,_ = Capture(spec=spec,NumItterations=100) 	#Capture Darks 
 	
 	Stops=2
 	LampControl(spec=spec,state=True,warmup=30)		#Light ON
@@ -207,13 +209,13 @@ def autogain_loop(spec,wavelengths,gain_mode,threshold,target):
 		spec.integration_time_micros(us)
 		print(f"{Stops}stops = {us}us",flush=True)
 		print("Trash 5 itter:", end=" ",flush=True)
-		_,trash,_ = Capture(spec=spec,NumItterations=5) 	#Capture throwaway
+		trash,_ = Capture(spec=spec,NumItterations=5) 	#Capture throwaway
 		print(f"Light {itterations} itter:", end=" ",flush=True)
-		_,Light,_ = Capture(spec=spec,NumItterations=itterations)	#Capture Lights
+		Light,_ = Capture(spec=spec,NumItterations=itterations)	#Capture Lights
 		
-		Signal = Light-Dark					#Correction
+		signal = Light-Dark					#Correction
 		if gain_mode=="Target":
-			I = gausian_roi_metric(wavelengths,Signal,target)#smoothII
+			I = gausian_roi_metric(wavelengths,signal,target)#smoothII
 		else:
 			I = max(gaussian_filter1d(Signal,sigma=2)) #Sigma in pixels  #SmoothI
 		
@@ -238,10 +240,7 @@ def autogain_loop(spec,wavelengths,gain_mode,threshold,target):
 			Stops += Step					#increment
 		else:
 			Stops -= Step					#decrement	
-def auto_gain():
-	#init spec
-	spec,wavelengths = GetSpec()
-	
+def auto_gain():	
 	#get user params
 	gain_mode = gain_mode_var.get()
 	low_thresh = lower_thresh.get()
@@ -253,7 +252,7 @@ def auto_gain():
 	print(f"Custom Wavelength Center: {target_wavelength_var} nm",flush=True)
 	
 	
-	Stops,Signal,intensity_history,stop_history,index_history = autogain_loop(spec=spec,wavelengths=wavelengths,gain_mode=gain_mode,threshold=[low_thresh,up_thresh],target=target_wavelength_var)
+	Stops,Signal,intensity_history,stop_history,index_history = autogain_loop(spec=DataManager.spec,wavelengths=DataManager.wavelengths,gain_mode=gain_mode,threshold=[low_thresh,up_thresh],target=target_wavelength_var)
 	# UPDATE THE GUI TEXT BOX VIA ITS VARIABLE
 	current_stops.set(Stops)
 	print(f"AutoGain executed. Updated Current Stops to: {Stops}",flush=True)
@@ -267,118 +266,157 @@ def auto_gain():
 
 def dark_frame_capture():
 	print(f"Dark Frame Capture clicked. Capturing...",flush=True)
-	spec,wavelengths = GetSpec()
 	
 	itterations = itteration_spinner.get()
 	Stops = current_stops.get()
 	us = shutterspeedStops(Stops)
 	print(f"{itterations} itterations @{Stops}stops,{us}us",flush=True)
 	
-	LampControl(spec=spec,state=False,warmup=5)		#Light OFF
+	LampControl(spec=DataManager.spec,state=False,warmup=5)		#Light OFF
 	print("Trash 5 itter:", end=" ",flush=True)
-	_,trash,_ = Capture(spec=spec,NumItterations=5) 	#Capture throwaway
+	trash,_ = Capture(spec=DataManager.spec,NumItterations=5) 	#Capture throwaway
 	print(f"Light {itterations} itter:", end=" ",flush=True)
-	_,Dark,_ = Capture(spec=spec,NumItterations=itterations) 	#Capture Darks
+	Dark,_ = Capture(spec=DataManager.spec,NumItterations=itterations) 	#Capture Darks
 	signal_raw_dark_counts.set(Dark)
+	DataManager.raw_dark=Dark
 	print(f"RAW Dark Frame Captured. Sample size: {itterations}",flush=True)
 	print(Dark,flush=True)
 
 
 def light_frame_capture():
 	print(f"RAW Light Frame Capture clicked. Capturing...",flush=True)
-	spec,wavelengths = GetSpec()
 
 	itterations = itteration_spinner.get()
 	Stops = current_stops.get()
 	us = shutterspeedStops(Stops)
 	print(f"{itterations} itterations @{Stops}stops,{us}us",flush=True)
 	
-	LampControl(spec=spec,state=True,warmup=5)		#Light ON
+	LampControl(spec=DataManager.spec,state=True,warmup=5)		#Light ON
 	print("Trash 5 itter:", end=" ",flush=True)
-	_,trash,_ = Capture(spec=spec,NumItterations=5) 	#Capture throwaway
+	trash,_ = Capture(spec=DataManager.spec,NumItterations=5) 	#Capture throwaway
 	print(f"Light {itterations} itter:", end=" ",flush=True)
-	_,Light,_ = Capture(spec=spec,NumItterations=itterations)	#Capture Lights
+	Light,_ = Capture(spec=DataManager.spec,NumItterations=itterations)	#Capture Lights
 	signal_raw_light_counts.set(Light)
+	DataManager.raw_light=Light
 	print(f"RAW Light Frame Captured. Sample size: {itterations}",flush=True)
 	print(Light,flush=True)
 
 def reference_capture():
 	print(f"RAW Reference Frame Capture clicked. Capturing...",flush=True)
-	spec,wavelengths = GetSpec()
 
 	itterations = itteration_spinner.get()
 	Stops = current_stops.get()
 	us = shutterspeedStops(Stops)
 	print(f"{itterations} itterations @{Stops}stops,{us}us",flush=True)
 	
-	LampControl(spec=spec,state=True,warmup=5)		#Light ON
+	LampControl(spec=DataManager.spec,state=True,warmup=5)		#Light ON
 	print("Trash 5 itter:", end=" ",flush=True)
-	_,trash,_ = Capture(spec=spec,NumItterations=5) 	#Capture throwaway
+	trash,_ = Capture(spec=DataManager.spec,NumItterations=5) 	#Capture throwaway
 	print(f"Ref {itterations} itter:", end=" ",flush=True)
-	_,Ref,_ = Capture(spec=spec,NumItterations=itterations)	#Capture Lights
+	Ref,_ = Capture(spec=DataManager.spec,NumItterations=itterations)	#Capture Lights
 	signal_raw_ref_counts.set(Ref)
+	DataManager.raw_ref=Ref
 	print(f"RAW Reference Frame Captured. Sample size: {itterations}",flush=True)
 	print(Ref,flush=True)
 
 def sample_capture():
 	print(f"RAW Sample Frame Capture clicked. Capturing...",flush=True)
-	spec,wavelengths = GetSpec()
-	
+		
 	itterations = itteration_spinner.get()
 	Stops = current_stops.get()
 	us = shutterspeedStops(Stops)
 	print(f"{itterations} itterations @{Stops}stops,{us}us",flush=True)
 	
-	LampControl(spec=spec,state=True,warmup=5)		#Light ON
+	LampControl(spec=DataManager.spec,state=True,warmup=5)		#Light ON
 	print("Trash 5 itter:", end=" ",flush=True)
-	_,trash,_ = Capture(spec=spec,NumItterations=5) 	#Capture throwaway
+	trash,_ = Capture(spec=DataManager.spec,NumItterations=5) 	#Capture throwaway
 	print(f"Light {itterations} itter:", end=" ",flush=True)
-	_,Sample,_ = Capture(spec=spec,NumItterations=itterations)	#Capture Lights
+	Sample,_ = Capture(spec=DataManager.spec,NumItterations=itterations)	#Capture Lights
 	signal_raw_samp_counts.set(Sample)
+	DataManager.raw_sample=Sample
 	print(f"RAW Sample Frame Captured. Itteration size: {itterations}",flush=True)
 	print(Sample,flush=True)
 	
 def dark_frame_correct():
-	Dark = text_to_array(signal_raw_dark_counts.get())
-	Light = text_to_array(signal_raw_light_counts.get())
-	Ref = text_to_array(signal_raw_ref_counts.get())
-	Sample =text_to_array(signal_raw_samp_counts.get())
-	
-	signal_light_counts.set(diff_arr(Light,Dark))
-	signal_ref_counts.set(diff_arr(Ref,Dark))
-	signal_samp_counts.set(diff_arr(Sample,Dark))
-	
-def text_to_array(text):
-	text = text.strip()
-	#empty field -> return none
-	if text.lower() == "empty":
-		return None
-	
-	#remove brackets
-	cleaned = text.strip("[]")
-	
-	#convert to array
-	array = np.fromstring(cleaned,sep=" ")
-	if array.size == 0:
-		return None
-	return array	
+	print("Dark Frame Correct:", end=" ",flush=True)
+	try:
+		DataManager.light = diff_arr(DataManager.raw_light,DataManager.raw_dark)
+		signal_light_counts.set("Captured")
+	except:
+		signal_light_counts.set("Error")
+		print("Error: Light Dark")
+		
+	try:
+		DataManager.ref = diff_arr(DataManager.raw_ref,DataManager.raw_dark)
+		signal_ref_counts.set("Captured")
+	except:
+		signal_ref_counts.set("Error")
+		print("Error: Ref Dark")
+		
+	try:
+		DataManager.sample = diff_arr(DataManager.raw_sample,DataManager.raw_dark)
+		signal_samp_counts.set("Captured")
+	except:
+		signal_samp_counts.set("Error")
+		print("Error: Sample Dark")
+		
+	print("Complete",flush=True)
 	
 def diff_arr(light,dark):
 	if light is None or dark is None:
 		return "Missing Data for Dark Correction"
 	else:
 		return light-dark
-		
-def comparison():
-	print(f"Comparison: {comparison_var.get()}",flush=True)
 
-def lamp_off():
-	spec,_ = GetSpec()
-	LampControl(spec=spec,state=False,warmup=0)#LightOFF
+def Plotter(wavelengths,signal,xlim=[343,1043]):
+	plt.figure(figsize=(10,6))
+	plt.plot(wavelengths,signal,linewidth=1.2)
+	plt.xlabel("Wavelength (nm)")
+	plt.ylabel("Intensity (counts)")
+	plt.title("Spectrum")
+	plt.grid(True,alpha=0.3)
+	plt.xlim(xlim)
+	plt.show()
+def PlotterDual(wavelengths,I0,I,lblI0="I0 (source)",lblI="I (sample)",title="Spectrum",xlim=[343,1043]):
+	plt.figure(figsize=(10,6))
+	plt.semilogy(wavelengths,I0,linewidth=1.2,label=lblI0)
+	plt.semilogy(wavelengths,I ,linewidth=1.2,label=lblI)
+	plt.xlabel("Wavelength (nm)")
+	plt.ylabel("Intensity (counts)")
+	plt.title(title)
+	plt.legend()
+	plt.grid(True,alpha=0.3)
+	plt.xlim(xlim)
+	plt.show()	
+def Examiner():
+	selection = Examiner_var.get()
+	print(f"Examination: {selection}",flush=True)
+	if selection=="ref_vs_light":
+		PlotterDual(wavelengths=DataManager.wavelengths,I0=DataManager.light,I=DataManager.ref,lblI0="I0 (Lamp)",lblI="I (Reference)",title="Spectrum",xlim=[343,1043])
+	elif selection=="sample_vs_light":
+		PlotterDual(wavelengths=DataManager.wavelengths,I0=DataManager.light,I=DataManager.sample,lblI0="I0 (Lamp)",lblI="I (Sample)",title="Spectrum",xlim=[343,1043])
+	elif selection=="sample_vs_ref":
+		PlotterDual(wavelengths=DataManager.wavelengths,I0=DataManager.ref,I=DataManager.sample,lblI0="I0 (Reference)",lblI="I (Sample)",title="Spectrum",xlim=[343,1043])
+	elif selection=="sample_vs_ref_Spot":
+		# Basic information popup
+		try:
+			I = gausian_roi_metric(wavelengths=DataManager.wavelengths,signal=DataManager.sample,target=target_wavelength.get())#smoothII
+			I0 = gausian_roi_metric(wavelengths=DataManager.wavelengths,signal=DataManager.ref,target=target_wavelength.get())#smoothII
+			A = np.log10(I0/I)
+			message_text = f"Absorbance = {A}\nReference I0 = {I0}\nSample I = {I}\nWavelength = {target_wavelength.get()}nm"
+			messagebox.showinfo("Absorbance", message_text)
+			print(message_text)
+		except:
+			print("something happened")
 	
-def lamp_on():
-	spec,_ = GetSpec()
-	LampControl(spec=spec,state=True,warmup=0)#Light ON
+def on_close():
+    print("The red X was clicked! Do your cleanup here.")
+    try:
+    	LampControl(DataManager.spec,state=False,warmup=0)
+    except:
+    	pass
+    root.destroy() # Closes the application
+    
 # --- GUI Setup ---
 root = tk.Tk()
 root.title("Advanced Capture Control Interface")
@@ -387,13 +425,16 @@ root.resizable(False, False)
 
 padding_opts = {"padx": 10, "pady": 6}
 
+# Attach the custom method to the window close protocol
+root.protocol("WM_DELETE_WINDOW", on_close)
+
 RowIDX = 0
 # =====================================================================
 # SECTION 1: AUTOGAIN CONTROLS
 # =====================================================================
-#btn_connect = ttk.Button(root, text="Connect to Spectrometer",command = connectSpec)
-#btn_auto_gain.grid(row=RowIDX, column=0, **padding_opts, sticky="ew")
-#RowIDX+=1
+btn_connect = ttk.Button(root, text="Connect to Spectrometer",command = connectSpec)
+btn_connect.grid(row=RowIDX, column=0, **padding_opts, sticky="ew")
+RowIDX+=1
 sep = ttk.Separator(root, orient="horizontal")
 sep.grid(row=RowIDX, column=0, columnspan=4, padx=10, pady=12, sticky="ew")
 RowIDX+=1
@@ -456,13 +497,8 @@ itteration_spinner = tk.IntVar(value=256)
 spin_box = ttk.Spinbox(root, from_=1, to=10000, increment=1, textvariable=itteration_spinner, width=8)
 spin_box.grid(row=RowIDX, column=1, **padding_opts, sticky="w")
 
-btn_lamp_off = ttk.Button(root, text="LAMP OFF", command=lamp_off)
-btn_lamp_off.grid(row=RowIDX, column=2, **padding_opts, sticky="ew")
-
-btn_lamp_on = ttk.Button(root, text="LAMP ON", command=lamp_on)
-btn_lamp_on.grid(row=RowIDX, column=3, **padding_opts, sticky="ew")
-
-
+btn_lamp_state = ttk.Button(root, text="LAMP OFF", command=Lamp_Toggle)
+btn_lamp_state.grid(row=RowIDX, column=2,**padding_opts, sticky="ew")
 
 # --- Row 3 & 4: Capture Action Buttons ---
 RowIDX+=1
@@ -548,26 +584,41 @@ label_samp_counts.grid(row=RowIDX+1, column=3, **padding_opts, sticky="w")
 
 # --- Row 6: Comparison Radio Buttons ---
 RowIDX+=2
-lbl_radio_group = ttk.Label(root, text="Comparison Mode:")
+lbl_radio_group = ttk.Label(root, text="Plotting Mode:")
 lbl_radio_group.grid(row=RowIDX, column=0, **padding_opts, sticky="w")
 
 # Radio variable to track selection
+Examiner_var = tk.StringVar(value="sample_vs_ref")
+
+rad_light_ref = ttk.Radiobutton(root, text="Reference / Light", variable=Examiner_var, value="ref_vs_light")
+rad_light_ref.grid(row=RowIDX, column=1, **padding_opts, sticky="w")
+
+rad_light_sample = ttk.Radiobutton(root,text="Sample / Light",variable=Examiner_var,value="sample_vs_light")
+rad_light_sample.grid(row=RowIDX, column=2, **padding_opts, sticky="w")
+
+rad_sample_ref = ttk.Radiobutton(root, text="Sample / Reference", variable=Examiner_var, value="sample_vs_ref")
+rad_sample_ref.grid(row=RowIDX, column=3, **padding_opts, sticky="w")
+
+#RowIDX+=1
+#rad_raw_dark = ttk.Radiobutton(root, text="Dark", variable=Examiner_var, value="Dark")
+#rad_raw_dark.grid(row=RowIDX, column=1, **padding_opts, sticky="w")
+#
+#rad_raw_light = ttk.Radiobutton(root,text="Light",variable=Examiner_var,value="Light")
+#rad_raw_light.grid(row=RowIDX, column=2, **padding_opts, sticky="w")
+#
+#rad_raw_ref = ttk.Radiobutton(root, text="Reference", variable=Examiner_var, value="Reference")
+#rad_raw_ref.grid(row=RowIDX, column=3, **padding_opts, sticky="w")
+#
+#rad_raw_sample = ttk.Radiobutton(root, text="Sample", variable=Examiner_var, value="Sample")
+#rad_raw_sample.grid(row=RowIDX, column=3, **padding_opts, sticky="w")
+
 RowIDX+=1
-comparison_var = tk.StringVar(value="sample_vs_ref")
-
-rad_light_ref = ttk.Radiobutton(root, text="Reference / Light", variable=comparison_var, value="ref_vs_light")
-rad_light_ref.grid(row=RowIDX, column=0, **padding_opts, sticky="w")
-
-rad_light_sample = ttk.Radiobutton(root,text="Sample / Light",variable=comparison_var,value="sample_vs_light")
-rad_light_sample.grid(row=RowIDX, column=1, **padding_opts, sticky="w")
-
-rad_sample_ref = ttk.Radiobutton(root, text="Sample vs Reference", variable=comparison_var, value="sample_vs_ref")
-rad_sample_ref.grid(row=RowIDX, column=2, **padding_opts, sticky="w")
+rad_sample_ref = ttk.Radiobutton(root, text="Sample / Reference Spot", variable=Examiner_var, value="sample_vs_ref_Spot")
+rad_sample_ref.grid(row=RowIDX, column=1, **padding_opts, sticky="w")
 
 RowIDX+=1
-btn_compare = ttk.Button(root, text="Compare", command=comparison)
+btn_compare = ttk.Button(root, text="Examine", command=Examiner)
 btn_compare.grid(row=RowIDX, column=1, **padding_opts, sticky="ew")
-
 
 
 
